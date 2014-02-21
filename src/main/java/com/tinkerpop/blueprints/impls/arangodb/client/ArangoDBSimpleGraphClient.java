@@ -13,6 +13,7 @@ import java.io.InputStreamReader;
 import java.io.Reader;
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Vector;
 
@@ -27,6 +28,7 @@ import org.apache.http.client.methods.HttpPut;
 import org.apache.http.client.methods.HttpRequestBase;
 import org.apache.http.conn.ClientConnectionManager;
 import org.apache.http.entity.StringEntity;
+import org.apache.http.entity.mime.MultipartEntityBuilder;
 import org.apache.http.impl.client.DefaultHttpClient;
 import org.apache.log4j.Logger;
 import org.codehaus.jettison.json.JSONArray;
@@ -764,7 +766,8 @@ public class ArangoDBSimpleGraphClient {
 	 */
 
 	public JSONObject postRequest(String path, JSONObject body) throws ArangoDBException {
-		return request(RequestType.POST, path, body);
+		 batchRequest(RequestType.POST, path, body);
+		 return new JSONObject();
 	}
 
 	/**
@@ -811,20 +814,27 @@ public class ArangoDBSimpleGraphClient {
 	/**
 	 * private methods
 	 */
+	private List<List> cachedRequests= new ArrayList<List>();
+	
+	private void batchRequest(RequestType type, String path, JSONObject body) throws ArangoDBException {
+		if (this.getConfiguration().getBatchSize()==0)
+			request(type, path, body);
+		else
+		{
+			//add the request to cached requests 
+			ArrayList req = new ArrayList();
+			req.add(type);
+			req.add(path);
+			req.add(body);
+			this.cachedRequests.add(req);
+		}
+		if (this.getConfiguration().getBatchSize()==cachedRequests.size()){
+			//commit cached requests 
+			commitBatch(null,null,null);
+		}
 
-	/**
-	 * Execute request and return result as a JSON object.
-	 * 
-	 * @param type
-	 *            the request type (one of "GET", "POST", "PUT", "DELETE")
-	 * @param path
-	 *            the request path
-	 * @param body
-	 *            an optional request body (only for "POST" and "PUT")
-	 * @return JSONObject the request result
-	 * @throws ArangoDBException
-	 */
-
+	}
+	
 	private JSONObject request(RequestType type, String path, JSONObject body) throws ArangoDBException {
 
 		HttpResponse response = null;
@@ -843,6 +853,129 @@ public class ArangoDBSimpleGraphClient {
 				HttpPost post = new HttpPost(path);
 				if (body != null) {
 					LOG.debug("Request-body: " + body.toString());
+					post.setEntity(new StringEntity(body.toString(), "application/json", "utf-8"));
+				}
+				request = post;
+				break;
+			case PUT:
+				LOG.debug("Request: PUT " + path);
+				HttpPut put = new HttpPut(path);
+				if (body != null) {
+					LOG.debug("Request-body: " + body.toString());
+					put.setEntity(new StringEntity(body.toString(), "application/json", "utf-8"));
+				}
+				request = put;
+				break;
+			case DELETE:
+				LOG.debug("Request: DELETE " + path);
+				request = new HttpDelete(path);
+				break;
+			}
+
+			request.setHeader("User-Agent", "Mozilla/5.0 (compatible; ArangoDB-Simple-Graph-Client 1.0)");
+
+			response = httpClient.execute(request);
+			if (response == null) {
+				return null;
+			}
+
+			// http status
+			StatusLine status = response.getStatusLine();
+			LOG.debug("Result: " + status.getStatusCode() + " " + status.getReasonPhrase());
+
+			HttpEntity entity = response.getEntity();
+			if (entity != null) {
+				Reader tempStreamReader = new InputStreamReader(entity.getContent());
+				StringBuilder tempStringBuilder = new StringBuilder();
+
+				int data = tempStreamReader.read();
+				while (data != -1) {
+					char tempChar = (char) data;
+					tempStringBuilder.append(tempChar);
+					data = tempStreamReader.read();
+				}
+
+				String tempString = tempStringBuilder.toString();
+
+				LOG.debug("Result-body:  " + tempString);
+
+				JSONObject o = new JSONObject(tempString);
+
+				if (status.getStatusCode() > 299) {
+					// LOG.error("got code " + status.getStatusCode() +
+					// " after: " + path);
+					if (o.has("errorNum") && o.has("errorMessage")) {
+						throw new ArangoDBException(o.getString("errorMessage"), o.getInt("errorNum"));
+					}
+				}
+
+				return o;
+			}
+
+			LOG.error("no result after: " + path);
+			throw new ArangoDBException("no result");
+		} catch (ClientProtocolException e) {
+			LOG.error("ClientProtocolException after: " + path, e);
+			e.printStackTrace();
+			throw new ArangoDBException("URL request error: " + e.getMessage());
+		} catch (IOException e) {
+			LOG.error("IOException after: " + path, e);
+			e.printStackTrace();
+			throw new ArangoDBException("URL request error: " + e.getMessage());
+		} catch (JSONException e) {
+			LOG.error("JSONException after: " + path, e);
+			e.printStackTrace();
+			throw new ArangoDBException("Error in request result: " + e.getMessage());
+		}
+	}
+
+
+		
+	/**
+	 * Execute request and return result as a JSON object.
+	 * 
+	 * @param type
+	 *            the request type (one of "GET", "POST", "PUT", "DELETE")
+	 * @param path
+	 *            the request path
+	 * @param body
+	 *            an optional request body (only for "POST" and "PUT")
+	 * @return JSONObject the request result
+	 * @throws ArangoDBException
+	 */
+
+	private JSONObject commitBatch(RequestType type, String path, JSONObject body) throws ArangoDBException {
+		type = RequestType.POST;
+		path = (String)this.cachedRequests.get(0).get(1);
+		HttpResponse response = null;
+		try {
+
+			path = configuration.getBaseUrl() + "/" + path;
+			LOG.debug("-----------------------------------");
+			HttpRequestBase request = null;
+			switch (type) {
+			case GET:
+				LOG.debug("Request: GET " + path);
+				request = new HttpGet(path);
+				break;
+			case POST:
+				LOG.debug("Request: POST " + path);
+				HttpPost post = new HttpPost(path);
+				if (body != null) {
+					LOG.debug("Request-body: " + body.toString());
+					
+					MultipartEntityBuilder mp = MultipartEntityBuilder.create();
+					
+					for (List r:this.cachedRequests){
+						RequestType t = (RequestType) r.get(0);
+						String p = (String) r.get(1); 
+						JSONObject b = (JSONObject) r.get(2);
+						mp.addPart(b.toString(), null);
+					}
+					
+					HttpEntity everything = mp.build();
+					
+					post.setEntity(everything);
 					post.setEntity(new StringEntity(body.toString(), "application/json", "utf-8"));
 				}
 				request = post;

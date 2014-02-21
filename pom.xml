@@ -46,7 +46,13 @@
         <artifactId>blueprints-test</artifactId>
         <version>${blueprints.version}</version>
         <scope>test</scope>
-    </dependency>  	
+    </dependency>
+    <dependency>
+    	<groupId>org.apache.httpcomponents</groupId>
+    	<artifactId>httpmime</artifactId>
+    	<version>4.3.2</version>
+    	<scope>runtime</scope>
+    </dependency>
   </dependencies>    
     <build>
         <directory>${basedir}/target</directory>
