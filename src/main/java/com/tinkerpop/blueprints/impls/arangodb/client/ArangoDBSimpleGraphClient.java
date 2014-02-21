@@ -765,8 +765,12 @@ public class ArangoDBSimpleGraphClient {
 	 * @throws ArangoDBException
 	 */
 
+	static int i=0;
 	public JSONObject postRequest(String path, JSONObject body) throws ArangoDBException {
 		 batchRequest(RequestType.POST, path, body);
+		 if(i%1000==0)
+			 LOG.warn(body.toString());
+		 i++;
 		 return new JSONObject();
 	}
 
